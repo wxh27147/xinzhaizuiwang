@@ -1,0 +1,100 @@
+name: CICLOPE festival verified media delta
+on:
+  push:
+    paths:
+      - '.github/workflows/media-batch-s012.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  site-delta:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - name: Download 45 current pending public raster images only
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > /tmp/media-recovery.py <<'PY'
+          import hashlib, json, pathlib, time, urllib.parse, urllib.request, urllib.error
+          from datetime import datetime, timezone
+          
+          SITE = "S012-ciclopefestival.com"
+          SOURCE = "baseline-20261116-1946-u100-part11-sites-S002-awwwards.com_to_S012-ciclopefestival.com_4sites.zip"
+          QUEUE_SHA256 = "43a1ee92c14ce721cfeadf2d6671be7964bd09ee1e3769a9883124837705aecb"
+          EXPECTED_URLS_SHA256 = "f379c5e1e408bd5392f24f9c4d54318e740ff4d1ab98d9aae9f8c58833a40335"
+          ROOT = pathlib.Path("media-delta") / SITE
+          MEDIA = ROOT / "media"
+          MEDIA.mkdir(parents=True, exist_ok=True)
+          relpaths = json.loads(r'''["wp-content/uploads/2026/10/CICLOPE-2026_Alma-Harel_01-scaled-e1791803473995.jpg","wp-content/uploads/2026/10/CICLOPE-2026-Awardwinners_coinbase_03-scaled.jpg","wp-content/uploads/2026/09/Site_Global-sponsor-Logos-2026_amazon-v3.png","wp-content/uploads/2025/04/newsletter-logo-2025_247-1.png","wp-content/uploads/2025/04/newsletter-logo-2025_lift-1.png","wp-content/uploads/2025/04/newsletter-logo-2025_work-1.png","wp-content/uploads/2025/04/newsletter-logo-2025_compass-rose-1.png","wp-content/uploads/2025/08/newsletter-logo-2025_Division.png","wp-content/uploads/2025/07/AOI-Pro-logo_newsletter-1.png","wp-content/uploads/2026/07/Site_-Global-sponsor-logos_Zauberberg-2026_w-background_500x500.png","wp-content/uploads/2026/09/Site_Global-sponsor-Logos-2026_Berlin-Senate-Department.png","wp-content/uploads/2026/09/Site_Global-sponsor-Logos-2026_visit-Berlin_v3.png","wp-content/uploads/2026/10/20261006_C2_00518-1024x683.jpg","wp-content/uploads/2025/06/CICLOPE-Trophies4-1024x641.jpg","wp-content/uploads/2026/08/Telstra_WAGGA-WAGGA-1-1024x576.jpeg","wp-content/uploads/2026/07/Go-Mongolia_C0317T01-1024x576.jpg","wp-content/uploads/2023/10/CICLOPE-Logo.png","wp-content/uploads/2026/10/20261007_C1_01758-scaled.jpg","wp-content/uploads/2026/10/CICLOPE-2026-Awardwinners_coinbase_01-scaled-e1792012461597.jpg","wp-content/uploads/2026/09/Alt-orange.png","wp-content/uploads/2026/08/2026-Gradient_global_hires_5.jpg","wp-content/uploads/2026/08/2026-Gradient_global_hires_1.jpg","wp-content/uploads/2026/10/CICLOPE-2026-Awardwinners_Special-Awards_WiedenKennedy-scaled.jpg","wp-content/uploads/2026/05/Jackie-Kelman-Bisbee-2-1024x1024.jpg","wp-content/uploads/2026/05/Rupert-Reynolds-MacLean-679x1024.jpeg","wp-content/uploads/2026/06/TARA-FORD-1024x1024.jpg","wp-content/uploads/2026/05/Guillaume-Marien-1024x683.jpeg","wp-content/uploads/2026/05/Zico-Judge-690x1024.jpeg","wp-content/uploads/2026/07/Marta-Bobic-1024x1024.jpg","wp-content/uploads/2026/05/Florian-Lakenmacher-2.jpg","wp-content/uploads/2026/08/Shu-Hung-1-1024x1024.jpg","wp-content/uploads/2026/10/CICLOPE-2026-Awardwinners_Special-Awards_MJZ-scaled-e1792013154635.jpg","wp-content/uploads/2025/06/CICLOPE-Trophies4.jpg","wp-content/uploads/2026/04/a-tale-as-old-as-websites_2025-GP-winner-cropped.jpg","wp-content/uploads/2025/10/2025-grand-prix_animation_in-hot-water_newsletter-2.png","wp-content/uploads/2026/03/HORNBACH_No-project-without-drama-_choir-05-scaled.jpg","wp-content/uploads/2026/10/CICLOPE-2026_Awards-Ceremony_01-scaled-e1791795399728.jpg","wp-content/uploads/2026/08/2026-Gradient_global_hires_4.jpg","wp-content/uploads/2026/09/Hero-purple.png","wp-content/uploads/2025/02/Berlin-2024_Awards5-1024x683.jpg","wp-content/uploads/2026/06/KYIKATEJE_2026-GP-winner_production-011-1024x555.jpg","wp-content/uploads/2026/05/APAC-2026-winner_gp-post-production_craftman.ships-01-scaled-1-1024x574.jpg","wp-content/uploads/2026/06/KYIKATEJE_2026-GP-winner_production-1024x562.jpg","wp-content/uploads/2026/04/Screenshot-2026-04-16-at-13.20.00-1024x620.jpg","wp-content/uploads/2026/03/HORNBACH_No-project-without-drama-_choir-02-1024x563.jpg"]''')
+          urls = ["https://www.ciclopefestival.com/" + p for p in relpaths]
+          assert len(urls) == 45 and len(set(urls)) == 51, "Unexpected queue size or duplicates"
+          assert hashlib.sha256("\n".join(urls).encode()).hexdigest() == EXPECTED_URLS_SHA256, "Queue does not match source snapshot"
+          
+          ok, remaining, failures = [], [], []
+          block_reason = None
+          def detected_extension(data):
+              if data.startswith(bytes.fromhex("ffd8ff")): return ".jpg"
+              if data.startswith(bytes.fromhex("89504e470d0a1a0a")): return ".png"
+              if data[:4] == b"RIFF" and data[8:12] == b"WEBP": return ".webp"
+              if data[:6] in (b"GIF87a", b"GIF89a"): return ".gif"
+              if data[4:12] in (b"ftypavif", b"ftypavis"): return ".avif"
+              raise ValueError("unrecognized binary image signature")
+          
+          for i, url in enumerate(urls, 1):
+              if block_reason:
+                  remaining.append(url)
+                  continue
+              parts = urllib.parse.urlsplit(url)
+              assert parts.scheme == "https" and parts.hostname == "www.ciclopefestival.com" and not parts.username and not parts.password
+              try:
+                  req = urllib.request.Request(url, headers={"User-Agent":"Mozilla/5.0 (compatible; DesignMediaPublicPreviewRecovery/1.0)", "Accept":"image/avif,image/webp,image/png,image/jpeg,image/*"})
+                  with urllib.request.urlopen(req, timeout=25) as resp:
+                      actual = urllib.parse.urlsplit(resp.url)
+                      if actual.scheme != "https" or actual.hostname != "www.ciclopefestival.com":
+                          raise ValueError("unexpected redirect outside intended public website")
+                      mime = (resp.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+                      if not mime.startswith("image/"):
+                          block_reason = "nonimage_or_access_gate"
+                          raise ValueError("response is not an image: " + mime)
+                      body = resp.read(6 * 1024 * 1024 + 1)
+                      if len(body) < 100 or len(body) > 6 * 1024 * 1024:
+                          raise ValueError("image size outside limit")
+                  ext = detected_extension(body)
+                  filename = hashlib.sha256(url.encode()).hexdigest()[:24] + ext
+                  (MEDIA / filename).write_bytes(body)
+                  ok.append({"url":url,"kind":"image","http_status":200,"bytes":len(body),"content_type":mime,"detected_format":ext[1:].upper(),"image_signature_verified":True,"local_file":"media/" + filename,"sha256":hashlib.sha256(body).hexdigest(),"status":"downloaded_verified"})
+                  print(f"OK {i}/{len(urls)} {filename} {len(body)}B")
+              except urllib.error.HTTPError as e:
+                  failures.append({"url":url,"status":e.code,"reason":"http_error"})
+                  remaining.append(url)
+                  if e.code in (401,403,429,503):
+                      block_reason = f"http_{e.code}_stop_site_no_retry"
+                  print(f"HTTP {e.code} {i}/{len(urls)}; {'stop site' if block_reason else 'continue'}")
+              except Exception as e:
+                  failures.append({"url":url,"reason":type(e).__name__,"message":str(e)[:160]})
+                  remaining.append(url)
+                  print(f"ERROR {i}/{len(urls)} {type(e).__name__}: {str(e)[:120]}")
+              time.sleep(0.6)
+          
+          ROOT.joinpath("media-records.delta.json").write_text(json.dumps(ok,ensure_ascii=False,indent=2),encoding="utf-8")
+          ROOT.joinpath("pending-media.remaining-urls.json").write_text(json.dumps(remaining,ensure_ascii=False,indent=2),encoding="utf-8")
+          ROOT.joinpath("media-failures.json").write_text(json.dumps(failures,ensure_ascii=False,indent=2),encoding="utf-8")
+          summary = {"site":SITE, "source_archive":SOURCE, "source_queue_sha256":QUEUE_SHA256,"original_queue_length":len(urls),"downloaded_verified":len(ok),"remaining":len(remaining),"failures":len(failures),"stop_reason":block_reason,"timestamp_utc":datetime.now(timezone.utc).isoformat(),"restore_note":"Supplemental delta only; deduplicate against latest snapshot by exact URL; do not replace prior media-records or pending-media blindly."}
+          ROOT.joinpath("media-delta-summary.json").write_text(json.dumps(summary,ensure_ascii=False,indent=2),encoding="utf-8")
+          if len(ok) + len(remaining) != len(urls): raise SystemExit("accounting mismatch")
+          print("SUMMARY",json.dumps(summary,ensure_ascii=False))
+          
+          PY
+          python3 /tmp/media-recovery.py
+          zip -qr site-delta.zip media-delta/
+          sha256sum site-delta.zip > site-delta.zip.sha256
+      - name: Preserve ZIP and hash as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: site-delta-s012-ciclope
+          path: |
+            site-delta.zip
+            site-delta.zip.sha256
+          retention-days: 7
+          if-no-files-found: error
