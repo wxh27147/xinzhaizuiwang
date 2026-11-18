@@ -1,0 +1,100 @@
+name: Directors Notes verified public media batch 001
+on:
+  push:
+    paths:
+      - '.github/workflows/media-batch-s019.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  site-delta:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - name: Download 40 current pending public Directors Notes images only
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > /tmp/media-recovery.py <<'PY'
+          import hashlib, json, pathlib, time, urllib.parse, urllib.request, urllib.error
+          from datetime import datetime, timezone
+          
+          SITE = "S019-directorsnotes.com"
+          SOURCE = "increment-20261116-201444-AsiaSingapore-part01.zip"
+          QUEUE_SHA256 = "e91b83574edb565a267d948ee884a74941a189bb729ffc561f1adadf018ab7f0"
+          EXPECTED_URLS_SHA256 = "986d4a0b4bfe63fcac7ba8125c34072dee511c007f9dd34434ec760f5ea2169e"
+          ROOT = pathlib.Path("media-delta") / SITE
+          MEDIA = ROOT / "media"
+          MEDIA.mkdir(parents=True, exist_ok=True)
+          relpaths = json.loads(r'''["wp-content/uploads/2006/11/never_marry_a_woman_with_big_feet_03.jpg","wp-content/uploads/2006/11/kcrw_inner_level-1440x500.jpg","wp-content/uploads/2006/11/kcrw_full_circle.jpg","wp-content/uploads/2006/11/kcrw_innerlevel_process.jpg","wp-content/uploads/2006/11/fullcircle_style.jpg","wp-content/uploads/2006/11/kcrw_inner_level.jpg","wp-content/uploads/2006/11/dn_itunes_faves.jpg","wp-content/uploads/2006/11/little_terrorist_10-1440x500.jpg","wp-content/uploads/2008/08/little_terrorist.jpg","wp-content/uploads/2006/11/little_terrorist_10.jpg","wp-content/uploads/2006/12/hadacol_christmas_02-1440x500.jpg","wp-content/uploads/2006/12/hadacol_christmas_01.jpg","wp-content/uploads/2006/12/hadacol_christmas_02.jpg","wp-content/uploads/2006/12/MrDreamer1024-1440x500.jpg","wp-content/uploads/2006/12/mr_citymen_01.jpg","wp-content/uploads/2006/12/LineSeeEat.jpg","wp-content/uploads/2006/12/MrDeathTexture.jpg","wp-content/uploads/2006/12/MisUnder.jpg","wp-content/uploads/2006/12/Love.jpg","wp-content/uploads/2006/12/Scared.jpg","wp-content/uploads/2006/12/Niceys_8.jpg","wp-content/uploads/2006/12/Niceys_7.jpg","wp-content/uploads/2006/12/Niceys_6.jpg","wp-content/uploads/2006/12/Niceys_10.jpg","wp-content/uploads/2006/12/Niceys_4.jpg","wp-content/uploads/2006/12/Niceys_2.jpg","wp-content/uploads/2006/12/Rocker.jpg","wp-content/uploads/2006/12/MrSunken1024.jpg","wp-content/uploads/2006/12/MrScared1024.jpg","wp-content/uploads/2006/12/MrDreamer1024.jpg","wp-content/uploads/2006/12/MrFortune1024.jpg","wp-content/uploads/2006/12/MrDejaVu1024.jpg","wp-content/uploads/2006/12/frame_of_mind_01-1440x500.jpg","wp-content/uploads/2006/12/frame_of_mind_01.jpg","wp-content/uploads/2006/12/phenomenal_xmas_02-1440x500.jpg","wp-content/uploads/2006/12/phenomenal_xmas_01.jpg","wp-content/uploads/2006/12/phenomenal_xmas_02.jpg","wp-content/uploads/2006/12/12_inch_pianist_20-1440x500.jpg","wp-content/uploads/2006/12/12_inch_pianist_01.jpg","wp-content/uploads/2006/12/12_inch_pianist_20.jpg"]''')
+          urls = ["https://directorsnotes.com/" + p for p in relpaths]
+          assert len(urls) == 40 and len(set(urls)) == 40, "Unexpected queue size or duplicates"
+          assert hashlib.sha256("\n".join(urls).encode()).hexdigest() == EXPECTED_URLS_SHA256, "Queue does not match source snapshot"
+          
+          ok, remaining, failures = [], [], []
+          block_reason = None
+          def detected_extension(data):
+              if data.startswith(bytes.fromhex("ffd8ff")): return ".jpg"
+              if data.startswith(bytes.fromhex("89504e470d0a1a0a")): return ".png"
+              if data[:4] == b"RIFF" and data[8:12] == b"WEBP": return ".webp"
+              if data[:6] in (b"GIF87a", b"GIF89a"): return ".gif"
+              if data[4:12] in (b"ftypavif", b"ftypavis"): return ".avif"
+              raise ValueError("unrecognized binary image signature")
+          
+          for i, url in enumerate(urls, 1):
+              if block_reason:
+                  remaining.append(url)
+                  continue
+              parts = urllib.parse.urlsplit(url)
+              assert parts.scheme == "https" and parts.hostname == "directorsnotes.com" and not parts.username and not parts.password
+              try:
+                  req = urllib.request.Request(url, headers={"User-Agent":"Mozilla/5.0 (compatible; DesignMediaPublicPreviewRecovery/1.0)", "Accept":"image/avif,image/webp,image/png,image/jpeg,image/*"})
+                  with urllib.request.urlopen(req, timeout=25) as resp:
+                      actual = urllib.parse.urlsplit(resp.url)
+                      if actual.scheme != "https" or actual.hostname != "directorsnotes.com":
+                          raise ValueError("unexpected redirect outside intended public website")
+                      mime = (resp.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+                      if not mime.startswith("image/"):
+                          block_reason = "nonimage_or_access_gate"
+                          raise ValueError("response is not an image: " + mime)
+                      body = resp.read(6 * 1024 * 1024 + 1)
+                      if len(body) < 100 or len(body) > 6 * 1024 * 1024:
+                          raise ValueError("image size outside limit")
+                  ext = detected_extension(body)
+                  filename = hashlib.sha256(url.encode()).hexdigest()[:24] + ext
+                  (MEDIA / filename).write_bytes(body)
+                  ok.append({"url":url,"kind":"image","http_status":200,"bytes":len(body),"content_type":mime,"detected_format":ext[1:].upper(),"image_signature_verified":True,"local_file":"media/" + filename,"sha256":hashlib.sha256(body).hexdigest(),"status":"downloaded_verified"})
+                  print(f"OK {i}/{len(urls)} {filename} {len(body)}B")
+              except urllib.error.HTTPError as e:
+                  failures.append({"url":url,"status":e.code,"reason":"http_error"})
+                  remaining.append(url)
+                  if e.code in (401,403,429,503):
+                      block_reason = f"http_{e.code}_stop_site_no_retry"
+                  print(f"HTTP {e.code} {i}/{len(urls)}; {'stop site' if block_reason else 'continue'}")
+              except Exception as e:
+                  failures.append({"url":url,"reason":type(e).__name__,"message":str(e)[:160]})
+                  remaining.append(url)
+                  print(f"ERROR {i}/{len(urls)} {type(e).__name__}: {str(e)[:120]}")
+              time.sleep(0.6)
+          
+          ROOT.joinpath("media-records.delta.json").write_text(json.dumps(ok,ensure_ascii=False,indent=2),encoding="utf-8")
+          ROOT.joinpath("pending-media.remaining-urls.json").write_text(json.dumps(remaining,ensure_ascii=False,indent=2),encoding="utf-8")
+          ROOT.joinpath("media-failures.json").write_text(json.dumps(failures,ensure_ascii=False,indent=2),encoding="utf-8")
+          summary = {"site":SITE, "source_archive":SOURCE, "source_queue_sha256":QUEUE_SHA256,"original_queue_length":len(urls),"downloaded_verified":len(ok),"remaining":len(remaining),"failures":len(failures),"stop_reason":block_reason,"timestamp_utc":datetime.now(timezone.utc).isoformat(),"restore_note":"Supplemental delta only; deduplicate against latest snapshot by exact URL; do not replace prior media-records or pending-media blindly."}
+          ROOT.joinpath("media-delta-summary.json").write_text(json.dumps(summary,ensure_ascii=False,indent=2),encoding="utf-8")
+          if len(ok) + len(remaining) != len(urls): raise SystemExit("accounting mismatch")
+          print("SUMMARY",json.dumps(summary,ensure_ascii=False))
+          
+          PY
+          python3 /tmp/media-recovery.py
+          zip -qr site-delta.zip media-delta/
+          sha256sum site-delta.zip > site-delta.zip.sha256
+      - name: Preserve ZIP and hash as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: site-delta-s019-directorsnotes-batch001
+          path: |
+            site-delta.zip
+            site-delta.zip.sha256
+          retention-days: 7
+          if-no-files-found: error
