@@ -1,0 +1,100 @@
+name: Directors Notes verified public media batch 002
+on:
+  push:
+    paths:
+      - '.github/workflows/media-batch-s019-second.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  site-delta:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - name: Download 40 current pending public Directors Notes images only
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > /tmp/media-recovery.py <<'PY'
+          import hashlib, json, pathlib, time, urllib.parse, urllib.request, urllib.error
+          from datetime import datetime, timezone
+          
+          SITE = "S019-directorsnotes.com"
+          SOURCE = "increment-20261116-201444-AsiaSingapore-part01.zip"
+          QUEUE_SHA256 = "e91b83574edb565a267d948ee884a74941a189bb729ffc561f1adadf018ab7f0"
+          EXPECTED_URLS_SHA256 = "a9c95dccb216fd1e148b856f66302048c56f26fc3913d6c9550a594e77d3e5e4"
+          ROOT = pathlib.Path("media-delta") / SITE
+          MEDIA = ROOT / "media"
+          MEDIA.mkdir(parents=True, exist_ok=True)
+          relpaths = json.loads(r'''["wp-content/uploads/2006/12/traffic_light_02-1440x500.jpg","wp-content/uploads/2006/12/traffic_light_02.jpg","wp-content/uploads/2007/01/bitpoh-1440x500.jpg","wp-content/uploads/2007/01/beauty_is_the_promise_of_happiness_02.jpg","wp-content/uploads/2007/01/beauty_is_the_promise_of_happiness_photo_elements.jpg","wp-content/uploads/2007/01/beauty_is_the_promise_of_happiness_green_screen.jpg","wp-content/uploads/2007/01/beauty_is_the_promise_of_happiness_poster_01.jpg","wp-content/uploads/2007/01/beauty_is_the_promise_of_happiness_poster_02.jpg","wp-content/uploads/2007/01/beauty_is_the_promise_of_happiness_poster_03.jpg","wp-content/uploads/2007/01/bitpoh.jpg","wp-content/uploads/2007/01/the_big_day_01-1440x500.jpg","wp-content/uploads/2007/01/the_big_day_02.jpg","wp-content/uploads/2007/01/the_big_day_01.jpg","wp-content/uploads/2007/01/the_host_3-1440x500.jpg","wp-content/uploads/2007/01/the_host_1.jpg","wp-content/uploads/2007/01/the_host_4.jpg","wp-content/uploads/2007/01/the_host_3.jpg","wp-content/uploads/2007/01/little_spitfire_02-1440x500.jpg","wp-content/uploads/2007/01/little_spitfire_03.jpg","wp-content/uploads/2007/01/little_spitfire_StuFacedesign.jpg","wp-content/uploads/2007/01/little_spitfire_PatFacedesign.jpg","wp-content/uploads/2007/01/little_spitfire_LeeFacedesign.jpg","wp-content/uploads/2007/01/little_spitfire_KirstenFacedesign.jpg","wp-content/uploads/2007/01/little_spitfire_ControllerFacedesign.jpg","wp-content/uploads/2007/01/little_spitfire_Dayoftheshoot-1.jpg","wp-content/uploads/2007/01/little_spitfire_Dayoftheshoot-2.jpg","wp-content/uploads/2007/01/little_spitfire_Dayoftheshoot-3.jpg","wp-content/uploads/2007/01/little_spitfire_Dayoftheshoot-4.jpg","wp-content/uploads/2007/01/little_spitfire_Dayoftheshoot-5.jpg","wp-content/uploads/2007/01/little_spitfire_Dayoftheshoot-6.jpg","wp-content/uploads/2007/01/little_spitfire_Dayoftheshoot-7.jpg","wp-content/uploads/2007/01/little_spitfire_Dayoftheshoot-8.jpg","wp-content/uploads/2007/01/little_spitfire_02.jpg","wp-content/uploads/2007/01/cache_1-1358x500.jpg","wp-content/uploads/2007/01/cache_2.jpg","wp-content/uploads/2007/01/children_of_men_1.jpg","wp-content/uploads/2007/01/cache_1.jpg","wp-content/uploads/2007/01/abigail_02-1440x500.jpg","wp-content/uploads/2007/01/abigail_04.jpg","wp-content/uploads/2007/01/abigail_02.jpg"]''')
+          urls = ["https://directorsnotes.com/" + p for p in relpaths]
+          assert len(urls) == 40 and len(set(urls)) == 40, "Unexpected queue size or duplicates"
+          assert hashlib.sha256("\n".join(urls).encode()).hexdigest() == EXPECTED_URLS_SHA256, "Queue does not match source snapshot"
+          
+          ok, remaining, failures = [], [], []
+          block_reason = None
+          def detected_extension(data):
+              if data.startswith(bytes.fromhex("ffd8ff")): return ".jpg"
+              if data.startswith(bytes.fromhex("89504e470d0a1a0a")): return ".png"
+              if data[:4] == b"RIFF" and data[8:12] == b"WEBP": return ".webp"
+              if data[:6] in (b"GIF87a", b"GIF89a"): return ".gif"
+              if data[4:12] in (b"ftypavif", b"ftypavis"): return ".avif"
+              raise ValueError("unrecognized binary image signature")
+          
+          for i, url in enumerate(urls, 1):
+              if block_reason:
+                  remaining.append(url)
+                  continue
+              parts = urllib.parse.urlsplit(url)
+              assert parts.scheme == "https" and parts.hostname == "directorsnotes.com" and not parts.username and not parts.password
+              try:
+                  req = urllib.request.Request(url, headers={"User-Agent":"Mozilla/5.0 (compatible; DesignMediaPublicPreviewRecovery/1.0)", "Accept":"image/avif,image/webp,image/png,image/jpeg,image/*"})
+                  with urllib.request.urlopen(req, timeout=25) as resp:
+                      actual = urllib.parse.urlsplit(resp.url)
+                      if actual.scheme != "https" or actual.hostname != "directorsnotes.com":
+                          raise ValueError("unexpected redirect outside intended public website")
+                      mime = (resp.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+                      if not mime.startswith("image/"):
+                          block_reason = "nonimage_or_access_gate"
+                          raise ValueError("response is not an image: " + mime)
+                      body = resp.read(6 * 1024 * 1024 + 1)
+                      if len(body) < 100 or len(body) > 6 * 1024 * 1024:
+                          raise ValueError("image size outside limit")
+                  ext = detected_extension(body)
+                  filename = hashlib.sha256(url.encode()).hexdigest()[:24] + ext
+                  (MEDIA / filename).write_bytes(body)
+                  ok.append({"url":url,"kind":"image","http_status":200,"bytes":len(body),"content_type":mime,"detected_format":ext[1:].upper(),"image_signature_verified":True,"local_file":"media/" + filename,"sha256":hashlib.sha256(body).hexdigest(),"status":"downloaded_verified"})
+                  print(f"OK {i}/{len(urls)} {filename} {len(body)}B")
+              except urllib.error.HTTPError as e:
+                  failures.append({"url":url,"status":e.code,"reason":"http_error"})
+                  remaining.append(url)
+                  if e.code in (401,403,429,503):
+                      block_reason = f"http_{e.code}_stop_site_no_retry"
+                  print(f"HTTP {e.code} {i}/{len(urls)}; {'stop site' if block_reason else 'continue'}")
+              except Exception as e:
+                  failures.append({"url":url,"reason":type(e).__name__,"message":str(e)[:160]})
+                  remaining.append(url)
+                  print(f"ERROR {i}/{len(urls)} {type(e).__name__}: {str(e)[:120]}")
+              time.sleep(0.6)
+          
+          ROOT.joinpath("media-records.delta.json").write_text(json.dumps(ok,ensure_ascii=False,indent=2),encoding="utf-8")
+          ROOT.joinpath("pending-media.remaining-urls.json").write_text(json.dumps(remaining,ensure_ascii=False,indent=2),encoding="utf-8")
+          ROOT.joinpath("media-failures.json").write_text(json.dumps(failures,ensure_ascii=False,indent=2),encoding="utf-8")
+          summary = {"site":SITE, "source_archive":SOURCE, "source_queue_sha256":QUEUE_SHA256,"original_queue_length":len(urls),"downloaded_verified":len(ok),"remaining":len(remaining),"failures":len(failures),"stop_reason":block_reason,"timestamp_utc":datetime.now(timezone.utc).isoformat(),"restore_note":"Supplemental delta only; deduplicate against latest snapshot by exact URL; do not replace prior media-records or pending-media blindly."}
+          ROOT.joinpath("media-delta-summary.json").write_text(json.dumps(summary,ensure_ascii=False,indent=2),encoding="utf-8")
+          if len(ok) + len(remaining) != len(urls): raise SystemExit("accounting mismatch")
+          print("SUMMARY",json.dumps(summary,ensure_ascii=False))
+          
+          PY
+          python3 /tmp/media-recovery.py
+          zip -qr site-delta.zip media-delta/
+          sha256sum site-delta.zip > site-delta.zip.sha256
+      - name: Preserve ZIP and hash as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: site-delta-s019-directorsnotes-batch002
+          path: |
+            site-delta.zip
+            site-delta.zip.sha256
+          retention-days: 7
+          if-no-files-found: error
