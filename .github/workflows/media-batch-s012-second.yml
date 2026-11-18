@@ -1,0 +1,100 @@
+name: CICLOPE festival media batch 002
+on:
+  push:
+    paths:
+      - '.github/workflows/media-batch-s012-second.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  site-delta:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - name: Download 45 current pending public raster images only
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > /tmp/media-recovery.py <<'PY'
+          import hashlib, json, pathlib, time, urllib.parse, urllib.request, urllib.error
+          from datetime import datetime, timezone
+          
+          SITE = "S012-ciclopefestival.com"
+          SOURCE = "baseline-20261116-1946-u100-part17-sites-S011-annecyfestival.com_to_S013-motionographer.com_3sites.zip"
+          QUEUE_SHA256 = "43a1ee92c14ce721cfeadf2d6671be7964bd09ee1e3769a9883124837705aecb"
+          EXPECTED_URLS_SHA256 = "cf2c14bd68e84a10e3c2eb1325097bd94ad1561530a8ecc611c93dbf0962a1a7"
+          ROOT = pathlib.Path("media-delta") / SITE
+          MEDIA = ROOT / "media"
+          MEDIA.mkdir(parents=True, exist_ok=True)
+          relpaths = json.loads(r'''["wp-content/uploads/2026/09/Anastasja_Black_headshot-768x1024.png","wp-content/uploads/2026/08/Jacobi-Mehringer-Headshot-1024x819.png","wp-content/uploads/2026/09/Maya_Bury_headshot-768x1024.jpg","wp-content/uploads/2026/09/Ashley_Yun_headshot-683x1024.jpg","wp-content/uploads/2026/09/Rodrigo_Inada_headshot-768x1024.jpg","wp-content/uploads/2026/09/Alice_Colagrande_headshot-768x1024.jpeg","wp-content/uploads/2026/09/Ferhat_Gurini_headshot-scaled-e1789374399401-958x1024.jpg","wp-content/uploads/2026/09/Madeleine_Chevrin_headshot-767x1024.jpeg","wp-content/uploads/2026/09/Lea_Esmaili_headshot-1024x768.jpeg","wp-content/uploads/2026/09/Florence_Jacob_headshot_NEW-768x1024.jpeg","wp-content/uploads/2026/09/Tanner_K_Williams_headshot@clarkgoldsberry-Lizzo-0080-1024x683.jpg","wp-content/uploads/2026/09/Daniel_McKee_headshot.jpg","wp-content/uploads/2026/09/2026-Gradient_global_hires_CFUTURE.jpg","wp-content/uploads/2026/09/C_FUTURE-green.png","wp-content/uploads/2025/02/Berlin-2024_Networking13-scaled.jpg","wp-content/uploads/2026/03/20251006-BRO04790-scaled.jpg","wp-content/uploads/2026/03/20251008-KB_05449_bw-1.png","wp-content/uploads/2026/03/20251007-LDO05088-scaled.jpg","wp-content/uploads/2026/03/20251006-BRO04611-scaled.jpg","wp-content/uploads/2025/09/Berlin-2024_Networking6_resized.png","wp-content/uploads/2026/09/pizza_foodtruck-HKW-cropped-1024x848.jpg","wp-content/uploads/2026/09/Weltwirtschaft-at-HKW.jpeg","wp-content/uploads/2023/07/belmondo.jpeg","wp-content/uploads/2026/06/bonvivant-location-8.jpg","wp-content/uploads/2026/06/Borchardt-restaurant_1.webp","wp-content/uploads/2023/07/cafe-am-neun-see-1024x683.jpeg","wp-content/uploads/2023/07/cassambalis-inside-1024x578.jpeg","wp-content/uploads/2026/06/coccodrillo_6-1024x683.jpg","wp-content/uploads/2023/10/27330284-1024x576.jpg","wp-content/uploads/2023/07/funkyfisch-1024x684.jpeg","wp-content/uploads/2026/06/Gendarmerie_Berlin_1.jpg","wp-content/uploads/2023/07/petit-royale-1024x683.jpeg","wp-content/uploads/2023/07/madame-ngo-outside-1024x768.jpeg","wp-content/uploads/2026/06/20241008-LDO-06011-1024x683.jpg","wp-content/uploads/2023/07/Screenshot-2025-08-29-at-13.23.44-1024x570.png","wp-content/uploads/2023/10/berlin-bars-paris-bar-1000x666-1543957801.jpg","wp-content/uploads/2026/06/Schnitzelei-Mitte-innen-02-1024x683.webp","wp-content/uploads/2023/10/24881177-1024x576.jpg","wp-content/uploads/2026/06/Veronika-Berlin_1-1024x683.webp","wp-content/uploads/2023/07/893-ryotei-profile.webp","wp-content/uploads/2026/06/bellboy-bar_2-1024x662.jpg","wp-content/uploads/2023/07/green-door-profile.webp","wp-content/uploads/2025/09/SnapInsta.to_412766547_892533638927120_5069564346405144284_n-1024x683.jpg","wp-content/uploads/2023/07/monkey-bar-berlin-1024x713.jpg","wp-content/uploads/2026/06/stagger-lee_2-1024x386.avif"]''')
+          urls = ["https://www.ciclopefestival.com/" + p for p in relpaths]
+          assert len(urls) == 45 and len(set(urls)) == 45, "Unexpected queue size or duplicates"
+          assert hashlib.sha256("\n".join(urls).encode()).hexdigest() == EXPECTED_URLS_SHA256, "Queue does not match source snapshot"
+          
+          ok, remaining, failures = [], [], []
+          block_reason = None
+          def detected_extension(data):
+              if data.startswith(bytes.fromhex("ffd8ff")): return ".jpg"
+              if data.startswith(bytes.fromhex("89504e470d0a1a0a")): return ".png"
+              if data[:4] == b"RIFF" and data[8:12] == b"WEBP": return ".webp"
+              if data[:6] in (b"GIF87a", b"GIF89a"): return ".gif"
+              if data[4:12] in (b"ftypavif", b"ftypavis"): return ".avif"
+              raise ValueError("unrecognized binary image signature")
+          
+          for i, url in enumerate(urls, 1):
+              if block_reason:
+                  remaining.append(url)
+                  continue
+              parts = urllib.parse.urlsplit(url)
+              assert parts.scheme == "https" and parts.hostname == "www.ciclopefestival.com" and not parts.username and not parts.password
+              try:
+                  req = urllib.request.Request(url, headers={"User-Agent":"Mozilla/5.0 (compatible; DesignMediaPublicPreviewRecovery/1.0)", "Accept":"image/avif,image/webp,image/png,image/jpeg,image/*"})
+                  with urllib.request.urlopen(req, timeout=25) as resp:
+                      actual = urllib.parse.urlsplit(resp.url)
+                      if actual.scheme != "https" or actual.hostname != "www.ciclopefestival.com":
+                          raise ValueError("unexpected redirect outside intended public website")
+                      mime = (resp.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+                      if not mime.startswith("image/"):
+                          block_reason = "nonimage_or_access_gate"
+                          raise ValueError("response is not an image: " + mime)
+                      body = resp.read(6 * 1024 * 1024 + 1)
+                      if len(body) < 100 or len(body) > 6 * 1024 * 1024:
+                          raise ValueError("image size outside limit")
+                  ext = detected_extension(body)
+                  filename = hashlib.sha256(url.encode()).hexdigest()[:24] + ext
+                  (MEDIA / filename).write_bytes(body)
+                  ok.append({"url":url,"kind":"image","http_status":200,"bytes":len(body),"content_type":mime,"detected_format":ext[1:].upper(),"image_signature_verified":True,"local_file":"media/" + filename,"sha256":hashlib.sha256(body).hexdigest(),"status":"downloaded_verified"})
+                  print(f"OK {i}/{len(urls)} {filename} {len(body)}B")
+              except urllib.error.HTTPError as e:
+                  failures.append({"url":url,"status":e.code,"reason":"http_error"})
+                  remaining.append(url)
+                  if e.code in (401,403,429,503):
+                      block_reason = f"http_{e.code}_stop_site_no_retry"
+                  print(f"HTTP {e.code} {i}/{len(urls)}; {'stop site' if block_reason else 'continue'}")
+              except Exception as e:
+                  failures.append({"url":url,"reason":type(e).__name__,"message":str(e)[:160]})
+                  remaining.append(url)
+                  print(f"ERROR {i}/{len(urls)} {type(e).__name__}: {str(e)[:120]}")
+              time.sleep(0.6)
+          
+          ROOT.joinpath("media-records.delta.json").write_text(json.dumps(ok,ensure_ascii=False,indent=2),encoding="utf-8")
+          ROOT.joinpath("pending-media.remaining-urls.json").write_text(json.dumps(remaining,ensure_ascii=False,indent=2),encoding="utf-8")
+          ROOT.joinpath("media-failures.json").write_text(json.dumps(failures,ensure_ascii=False,indent=2),encoding="utf-8")
+          summary = {"site":SITE, "source_archive":SOURCE, "source_queue_sha256":QUEUE_SHA256,"original_queue_length":len(urls),"downloaded_verified":len(ok),"remaining":len(remaining),"failures":len(failures),"stop_reason":block_reason,"timestamp_utc":datetime.now(timezone.utc).isoformat(),"restore_note":"Supplemental delta only; deduplicate against latest snapshot by exact URL; do not replace prior media-records or pending-media blindly."}
+          ROOT.joinpath("media-delta-summary.json").write_text(json.dumps(summary,ensure_ascii=False,indent=2),encoding="utf-8")
+          if len(ok) + len(remaining) != len(urls): raise SystemExit("accounting mismatch")
+          print("SUMMARY",json.dumps(summary,ensure_ascii=False))
+          
+          PY
+          python3 /tmp/media-recovery.py
+          zip -qr site-delta.zip media-delta/
+          sha256sum site-delta.zip > site-delta.zip.sha256
+      - name: Preserve ZIP and hash as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: site-delta-s012-ciclope-batch002
+          path: |
+            site-delta.zip
+            site-delta.zip.sha256
+          retention-days: 7
+          if-no-files-found: error
